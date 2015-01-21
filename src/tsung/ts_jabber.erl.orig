@@ -333,11 +333,7 @@ username(Prefix, DestId) ->
 %%% Func: password/1
 %%% Generate password for a given username
 %%%----------------------------------------------------------------------
-%%% NICK>
-%%%  password(Prefix,Id) ->
-%%%    username(Prefix,Id).
-password(Prefix,Id) when is_integer(Id)->
-    Prefix;
 password(Prefix,Id) ->
-    Prefix.
+    username(Prefix,Id).
+
 
