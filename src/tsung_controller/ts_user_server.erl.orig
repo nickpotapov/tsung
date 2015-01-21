@@ -396,13 +396,8 @@ handle_cast({add_to_online, Id}, State=#state{online=Online, connected=Connected
             ets:insert(Online, {Id,1}),
             {noreply, State#state{last_online=Id}};
         false ->
-            %%% NICK>
-            %% ?LOGF("add_to_online: warn, id ~p is not connected,do not add to online~n",[Id],?NOTICE),
-            %% Just stub code, should update with the right one once Roman will provide it
-            ?LOGF("NICK> add_to_online: is overwritten, id ~p is added to online~n",[Id],?NOTICE),
-            ets:insert(Online, {Id,1}),
+            ?LOGF("add_to_online: warn, id ~p is not connected,do not add to online~n",[Id],?NOTICE),
             {noreply, State}
-
     end;
 
 handle_cast({remove_from_online, Id}, State=#state{online=Online,connected=Connected}) ->
