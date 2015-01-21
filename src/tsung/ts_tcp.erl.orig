@@ -34,9 +34,6 @@
 
 protocol_options(#proto_opts{tcp_rcv_size=Rcv, tcp_snd_size=Snd}) ->
     [binary,
-%%% NICK>
-     {reuseaddr, true},
-
      {active, once},
      {recbuf, Rcv},
      {sndbuf, Snd},
