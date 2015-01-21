@@ -32,7 +32,7 @@ use strict;
 use Getopt::Long;
 use vars qw ($help @files $dygraph $verbose $debug $noplot $noextra $version $stats
              $template_dir $nohtml $template_dir $gnuplot $logy $rotate_xtics
-             $imgfmt $oldgnuplot );
+             $imgfmt $oldgnuplot $report_title );
 use File::Spec::Functions qw(rel2abs);
 use File::Basename;
 use File::Copy;
@@ -52,7 +52,8 @@ GetOptions( "help",\$help,
             "nohtml",\$nohtml,
             "rotate-xtics",\$rotate_xtics,
             "noextra",\$noextra,
-            "img_format=s",\$imgfmt
+            "img_format=s",\$imgfmt,
+            "title=s",\$report_title
           );
 
 &usage if $help or $Getopt::Long::error;
@@ -89,8 +90,9 @@ unless ($template_dir) {
 $stats = "tsung.log" unless $stats;
 die "The stats file ($stats) does not exist, abort !" unless -e $stats;
 
+$report_title = "Tsung" unless $report_title;
 $imgfmt = "png" unless $imgfmt;
-my %imgfmt_list = ("png" => 1,  "svg" => 1,  "pdf" => 1,  "ps" => 1); # hash of all the format we support to make search more efficient
+my %imgfmt_list = ("png" => 1, "svg" => 1,  "pdf" => 1,  "ps" => 1); # hash of all the format we support to make search more efficient
 die "Image format \"$imgfmt\" not supported" unless $imgfmt_list{"$imgfmt"};
 
 my $datadir = "data"; # all data files are created in this subdirectory
@@ -98,6 +100,7 @@ my $imgdir  = "images"; # all data files are created in this subdirectory
 my $gplotdir = "gnuplot_scripts"; # all data files are created in this subdirectory
 my $csvdir  = "csv_data"; # all data files are created in this subdirectory
 my $http; # true if http. add status code graphs in the HTML output
+my $bosh; # true if bosh. add bosh specific graphs in the HTML output
 
 my @dydirs = ($csvdir);
 my @gnuplotdirs=($gplotdir, $imgdir);
@@ -135,11 +138,15 @@ sub is_oldgnuplot {
     }
 }
 
+sub gnuplot_has_cairo {
+    return (system("$gnuplot -e 'set term pngcairo' 2> /dev/null ") == 0)
+}
 
 # plot stats from file with gnuplot
 sub plot_stats {
     # args:
-    my $title     = shift; # arrayref contaning data titles
+    my $names     = shift; # arrayref contaning data names
+    my $titles    = shift; # arrayref contaning data titles
     my $datatype  = shift; # type of data (added in filenames)
     my $timestamp = shift;
     my $files     = shift; # arrayref contaning data files
@@ -158,51 +165,76 @@ sub plot_stats {
         return;
     }
 
+    my $has_pngcairo = &gnuplot_has_cairo();
+    print STDERR "Using pngcairo support in gnuplot\n" if $verbose and $has_pngcairo;
+
     $datatype = "unknown" unless $datatype;
     open(GP,">$gplotdir/graphes-$datatype.gplot") or die "can't open graphes-$datatype.gplot: $!";
     select GP;
-    foreach my $output_ext ($imgfmt, "tn.png") {
-        if (($output_ext eq "png") || ($output_ext eq "tn.png")) {
-            $output_type = "png";
-        } elsif ($output_ext eq "ps") {
+    foreach my $output_fmt ($imgfmt, "tn.png") {
+        my $output_ext;
+        my $output_type;
+        if (($output_fmt eq "png") || ($output_fmt eq "tn.png")) {
+            $output_ext = "png";
+            if ($has_pngcairo) {
+                $output_type = "pngcairo ";
+            } else {
+                $output_type = "png ";
+            }
+        } elsif ($output_fmt eq "ps") {
             $output_type = "postscript color ";
-        } elsif ($output_ext eq "pdf") {
+            $output_ext = "ps";
+        } elsif ($output_fmt eq "pdf") {
             $output_type = "pdf color ";
-        } elsif ($output_ext eq "svg") {
-            $output_type = "svg";
+            $output_ext = "pdf";
+        } elsif ($output_fmt eq "svg") {
+            $output_type = "svg ";
+            $output_ext = "svg";
         }
         # gnuplot styles and options
-        print "set size $thumbnail_size,$thumbnail_size\n" if (($output_ext eq "tn.png") && $oldgnuplot);
-        print "set xtics rotate by +90\n"  if ((($output_ext eq "png") || ($output_ext eq "tn.png")) and ($rotate_xtics));
+        print "set size $thumbnail_size,$thumbnail_size\n" if (($output_fmt eq "tn.png") and $oldgnuplot);
+        print "set xtics rotate\n"  if (($output_ext eq "png") and ($rotate_xtics));
         print "set style data  $style\n";
-        if (($output_ext eq "tn.png") and not $oldgnuplot) {
+        if (($output_fmt eq "tn.png") and not $oldgnuplot  and ($output_type !~ /pngcairo/)) {
             print "set terminal $output_type tiny size 320,240\n";
-        } elsif ((($output_type eq "svg") or (($output_type eq "png"))) and not $oldgnuplot) {
-            print "set terminal $output_type  size 1024,768\n";
+        } elsif (($output_fmt eq "tn.png") and not $oldgnuplot) {
+            print "set terminal $output_type size 320,240 font 'Verdana,7' \n";
+        } elsif ((($output_ext eq "svg") or (($output_ext eq "png")) ) and not $oldgnuplot) {
+            print "set terminal $output_type size 1024,768\n";
         } else {
             print "set terminal $output_type\n";
         }
         print "set grid\n";
+        # remove border on top and right and set color to gray
+        print "set style line 11 lc rgb '#808080' lt 1\n";
+        print "set border 3 back ls 11\n";
+        print "set tics nomirror\n";
+        print "set style line 1 lc rgb '#8b1a0e' pt 1 ps 1 lt 2 lw 2\n"; # --- red
+        print "set style line 2 lc rgb '#5e9c36' pt 6 ps 1 lt 2 lw 2\n"; # --- green
+
         my $d; # temporary var (title)
-        foreach $d (0..$#{$title}) {
+        foreach $d (0..$#{$names}) {
             # gnuplot headings
-            if ($output_ext eq "tn.png") {
-                print "set output \"$imgdir/graphes-$datatype-@{$title}[$d]_$output_ext\"\n";
+            if ($output_fmt eq "tn.png") {
+                print "set output \"$imgdir/graphes-$datatype-@{$names}[$d]_$output_fmt\"\n";
             } else  {
-                print "set output \"$imgdir/graphes-$datatype-@{$title}[$d].$output_ext\"\n";
+                print "set output \"$imgdir/graphes-$datatype-@{$names}[$d].$output_ext\"\n";
             }
-            print "set title \" @{$title}[$d]\"\n";
+            print "set title \" @{$titles}[$d]\"\n";
             if ($timestamp) {
                 print "set xlabel \"unit = $timestamp sec \"\n";
             } else {
-                print "set xlabel \"unit = sec \"\n";
+                print "set xlabel \"time (sec of the running test)\"\n";
             }
             print "set ylabel \"".$ylabel->[$d]."\"\n" if $ylabel->[$d];
             print "show title\n";
             print "set $legend_loc\n";
             print "set logscale y\n" if $logy;
+
             print "plot ";
+            my $lineindex=0;
             foreach $filename (@{$files}) {
+                $lineindex++;
                 print " \"$datadir/$filename\" using ";
                 # if $timestamp isn't defined, use the first column as timestamp
                 if ($timestamp) {
@@ -213,7 +245,7 @@ sub plot_stats {
                 my $cur_title = $filename;
                 $cur_title =~ s/\.txt$//;
                 $cur_title =~ s/:os_mon//;
-                print " title \"$cur_title\"" ;
+                print " title \"$cur_title\" ls $lineindex" ;
                 print "," unless ($filename eq @{$files}[$#{$files}]); # unless last occurence
             }
             print "\n"; # plot done
@@ -255,6 +287,7 @@ sub plot_stats_dygraph {
   foreach $d (0..$#{$title}) {
     #loop on all the kind of graph needed for a subject (transaction, user ...)
     $info{'path'} = "$csvdir/graphes-$datatype-@{$title}[$d].csv";
+    @rowdata = ();
     #if ($timestamp) {
     #  print "set xlabel \"unit = $timestamp sec \"\n";
     #} else {
@@ -342,7 +375,7 @@ sub parse_stats_file {
             } else {
                 $type =~ s/\{(\S+)\,\"(\S+)\"\}/$1:os_mon\@$2/g;
             }
-            my ($rate,$mean,$stdvar,$max,$min,$meanfb,$countfb) = split(/\s+/,$values);
+            my ($rate,$mean,$stddev,$max,$min,$meanfb,$countfb) = split(/\s+/,$values);
             if ($type =~ /^cpu:/ ) {
                 next if $values =~ /^0/; # skip when no data is available
                 next if $mean > $CPU_MAX; # skip bad value
@@ -386,6 +419,10 @@ sub parse_stats_file {
             if ($interval) {
                 $rate /= $interval;
                 $maxval->{'rate'}->{$type} = &max($rate, $maxval->{'rate'}->{$type});
+                $maxval->{'rate_total'}->{$type} = 0 if not defined $maxval->{'rate_total'}->{$type};
+                $maxval->{'rate_count'}->{$type} = 0 if not defined $maxval->{'rate_count'}->{$type};
+                $maxval->{'rate_total'}->{$type} = $maxval->{'rate_total'}->{$type} + $rate;
+                $maxval->{'rate_count'}->{$type} = $maxval->{'rate_count'}->{$type} + 1;
                 $maxval->{'maxmean'}->{$type} = &max($mean, $maxval->{'maxmean'}->{$type});
                 $maxval->{'mean'}->{$type} = $meanfb;
                 $maxval->{'count'}->{$type} = &max($countfb, $maxval->{'count'}->{$type});
@@ -414,6 +451,7 @@ sub parse_stats_file {
     my @time;
     my @errors;
     my @tps;
+    my @bosh_tps;
     my @code;
     my %extra_info = ();
     my @session;
@@ -429,7 +467,7 @@ sub parse_stats_file {
         print "warn, last interval ($interval) not equal to the first, use the first one ($first_interval)\n";
         $interval=$first_interval;
     }
-  my @col = ("rate","mean","stdvar","max_sample","min_sample"); #session, perfs et transaction
+  my @col = ("rate","mean","stddev","max_sample","min_sample"); #session, perfs et transaction
   my @colcount = ("rate","total"); #http_code match, event, errirn users_arrivaln size
   my @colusers = ("simultaneous","maximum_simultaneous"); #users
   my @colasync = ("rate","total");			  #async
@@ -469,6 +507,9 @@ sub parse_stats_file {
             push @async, "$key.txt";
         } elsif ($key =~ /request$/ or $key eq "connect" or $key eq "async_rcv") {
             push @tps, "$key.txt";
+        } elsif ($key eq "bosh_http_conn" or $key eq "bosh_http_req") {
+	    $bosh = 1;
+            push @bosh_tps, "$key.txt";
         } elsif ($key =~ /^tr_/ or $key eq "page") {
             push @transactions, "$key.txt";
         } elsif ($key =~ /^\d+$/) {
@@ -483,20 +524,22 @@ sub parse_stats_file {
         close TYPE;
     }
   if (not $dygraph) {
-    plot_stats(\@col,"Session",undef,\@session,["sessions/sec"],$logy) unless $noplot;
-    plot_stats(\@colcount,"HTTP_CODE",undef,\@code,["number/sec","total"],$logy) if not $noplot and @code;
-    plot_stats(\@col,"Perfs",undef,\@tps,["rate","msec"],$logy) unless $noplot;
-    plot_stats(\@col,"Transactions",undef,\@transactions,["transactions/sec","msec"],$logy) unless $noplot;
-    plot_stats(\@colcount,"Match",undef,\@match,["rate","rate"],$logy) unless $noplot;
-    plot_stats(\@colcount,"Event",undef,\@time,["rate","msec"],$logy) unless $noplot;
-    plot_stats(\@colasync,"Async",undef,\@async,["rate","rate"],$logy) unless $noplot;
-    plot_stats(\@colcount,"Errors",undef,\@errors,["errors/sec","total"],$logy) unless $noplot;
-    plot_stats(\@colusers,"Users",undef,\@users,["value", "total"],$logy) unless $noplot;
-    plot_stats(\@colcount,"Users_Arrival",undef,\@users_rate,["number of users/sec", "total"],$logy) unless $noplot;
-    plot_stats(\@colcount,"Size",undef,\@size,["Kbits/sec","total Kbits"],$logy) unless $noplot;
+    plot_stats(\@col,\@col,"Session",undef,\@session,["sessions/sec"],$logy) unless $noplot;
+    plot_stats(\@colcount,["HTTP Code Response rate","total"], "HTTP_CODE",undef,\@code,["number/sec","total"],$logy) if not $noplot and @code;
+    plot_stats(\@colcount,\@colcount,"Bosh",undef,\@bosh_tps,["rate"],$logy) unless $noplot;
+    plot_stats(\@col,["Request and tcp/udp connection rate","Mean request (and connection) duration","stddev","max_sample","min_sample"],"Perfs",undef,\@tps,["Requests rate (r/sec)","Requests duration (msec)"],$logy) unless $noplot;
+    plot_stats(\@col,["Transaction and page rate", "Mean transaction and page duration","stddev","max_sample","min_sample"],"Transactions",undef,\@transactions,["transactions/sec","Transaction duration (msec)"],$logy) unless $noplot;
+    plot_stats(\@colcount,\@colcount,"Match",undef,\@match,["rate","rate"],$logy) unless $noplot;
+    plot_stats(\@colcount,\@colcount,"Event",undef,\@time,["rate","msec"],$logy) unless $noplot;
+    plot_stats(\@colasync,\@colasync,"Async",undef,\@async,["rate","rate"],$logy) unless $noplot;
+    plot_stats(\@colcount,\@colcount,"Errors",undef,\@errors,["errors/sec","total"],$logy) unless $noplot;
+    plot_stats(\@colusers,["Simultaneous users and opened TCP/UDP connections","maximum_simultaneous"],"Users",undef,\@users,["value", "total"],$logy) unless $noplot;
+    plot_stats(\@colcount,["Users arrival/departure rate", "Total users"],"Users_Arrival",undef,\@users_rate,["number of users/sec", "total"],$logy) unless $noplot;
+    plot_stats(\@colcount,["Network throughput","Total send/receive bytes"],"Size",undef,\@size,["Kbits/sec","total Kbits"],$logy) unless $noplot;
   } else {
     plot_stats_dygraph(\@col,"Session",undef,\@session,["sessions/sec"],$logy) unless $noplot;
     plot_stats_dygraph(\@colcount,"HTTP_CODE",undef,\@code,["number/sec","total"],$logy) if not $noplot and @code;
+    plot_stats_dygraph(\@colcount,"Bosh",undef,\@bosh_tps,["rate"],$logy) if not $noplot and @bosh_tps;
     plot_stats_dygraph(\@col,"Perfs",undef,\@tps,["rate","msec"],$logy) unless $noplot;
     plot_stats_dygraph(\@col,"Transactions",undef,\@transactions,["transactions/sec","msec"],$logy) unless $noplot;
     plot_stats_dygraph(\@colcount,"Match",undef,\@match,["rate","rate"],$logy) unless $noplot;
@@ -513,7 +556,7 @@ sub parse_stats_file {
         foreach my $key (sort keys %extra_info) {
             my $pos = index($key,":");
             if (not $dygraph) {
-                plot_stats(\@col, $key, undef, \@{$extra_info{$key}}, [$key],$logy);
+                plot_stats(\@col,\@col, $key, undef, \@{$extra_info{$key}}, [$key],$logy);
             } else {
                 plot_stats_dygraph(\@col, $key, undef, \@{$extra_info{$key}}, [$key],$logy);
             }
@@ -525,7 +568,7 @@ sub parse_stats_file {
 
 sub html_report {
     require Template;
-    my $titre     = 'Tsung ';
+    my $titre     = $report_title;
     my $version   = $tagvsn;
     my $contact   = '@PACKAGE_BUGREPORT@';
     my $output   = 'index.html';
@@ -552,6 +595,10 @@ sub html_report {
             next if not ($data eq "session" or $data eq "connect" or $data eq "request" or $data eq "page" or $data =~ m/^tr_/);
             $maxval->{$type}->{$data} = &formattime($maxval->{$type}->{$data});
         }
+    }
+    foreach my $data (keys % {$maxval->{'rate_count'}} ) {
+        next if ($data =~ m/^size/);
+        $maxval->{'rate_mean'}->{$data} = sprintf "%.2f",$maxval->{'rate_total'}->{$data} / $maxval->{'rate_count'}->{$data};
     }
     foreach my $size ("size_rcv", "size_sent") {
         if ($maxval->{rate}->{$size}) {
@@ -586,6 +633,7 @@ sub html_report {
          http        => $http,
          match       => $match,
          async       => $async,
+         bosh       => $bosh,
          title       => $titre,
          subtitle    => "Graphs Report",
          stats_subtitle => "Stats Report ",
@@ -625,7 +673,8 @@ type `tsung_stats.pl --version` for details.\n\n";
     "[--rotate-xtics  (rotate legend of x axes)\n\t",
     "[--stats <file>] (stats file to analyse, default=tsung.log)\n\t",
     "[--img_format <format>] (output format for images, default=png
-                                 available format: ps, svg, png, pdf)\n\t";
+                                 available format: ps, svg, png, pdf)\n\t",
+    "[--title <title>] (report title, default=Tsung)\n\t";
     exit;
 }
 
@@ -676,7 +725,7 @@ sub formatsize {
 sub version {
   print "this script is part of Tsung version $tagvsn
 
-Written by Nicolas Niclausse and Jean François Lecomte
+Written by Nicolas Niclausse and Jean FranÃ§ois Lecomte
 
 Copyright (C) 2001-2004 IDEALX (http://IDEALX.org/)
 Copyright (C) 2004-2011 Nicolas Niclausse
@@ -694,6 +743,6 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program (see COPYING); if not, write to the 
 Free Software Foundation, Inc., 59 Temple Place - Suite 330, 
-Boston, MA 02111-1307, USA.";
+Boston, MA 02111-1307, USA.\n";
   exit;
 }
